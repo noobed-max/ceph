@@ -74,6 +74,7 @@
 #endif
 #include "rgw_lua_background.h"
 #include "services/svc_zone.h"
+#include "rgw_heap_profiler.h"
 
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
@@ -258,6 +259,17 @@ void rgw::AppMain::init_perfcounters()
 {
   (void) rgw_perf_start(dpp->get_cct());
 } /* init_perfcounters */
+
+void rgw::AppMain::init_heap_profiler()
+{
+  heap_profiler_hook = std::make_unique<RGWHeapProfilerHook>(dpp->get_cct());
+  int r = heap_profiler_hook->start();
+  if (r < 0) {
+    lderr(dpp->get_cct()) << "WARNING: failed to start heap profiler hook"
+                          << dendl;
+    heap_profiler_hook.reset();
+  }
+} /* init_heap_profiler */
 
 void rgw::AppMain::init_http_clients()
 {
@@ -601,6 +613,12 @@ void rgw::AppMain::init_dedup()
 
 void rgw::AppMain::shutdown(std::function<void(void)> finalize_async_signals)
 {
+  // stop heap profiler hook
+  if (heap_profiler_hook) {
+    heap_profiler_hook->shutdown();
+    heap_profiler_hook.reset();
+  }
+
   // stop the realm reloader
   rgw_pauser.reset();
   fe_pauser.reset();

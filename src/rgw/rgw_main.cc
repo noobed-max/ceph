@@ -14,6 +14,7 @@
 #include "rgw_common.h"
 #include "rgw_lib.h"
 #include "rgw_log.h"
+#include "perfglue/heap_profiler.h"
 
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
@@ -103,6 +104,7 @@ int main(int argc, char *argv[])
 
   auto cct = rgw_global_init(&defaults, args, CEPH_ENTITY_TYPE_CLIENT,
 			     CODE_ENVIRONMENT_DAEMON, flags);
+  ceph_heap_profiler_init();
 
   DoutPrefix dp(cct.get(), dout_subsys, "rgw main: ");
   rgw::AppMain main(&dp);
@@ -138,6 +140,7 @@ int main(int argc, char *argv[])
   sighandler_alrm = signal(SIGALRM, godown_alarm);
 
   main.init_perfcounters();
+  main.init_heap_profiler();
   main.init_http_clients();
 
   r = main.init_storage();

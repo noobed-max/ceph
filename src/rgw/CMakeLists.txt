@@ -406,6 +406,7 @@ set(rgw_a_srcs
   rgw_client_io.cc
   rgw_file.cc
   rgw_frontend.cc
+  rgw_heap_profiler.cc
   rgw_http_client_curl.cc
   rgw_kmip_client_impl.cc
   rgw_lib.cc
@@ -467,6 +468,7 @@ target_link_libraries(rgw_a
   PRIVATE
     legacy-option-headers
     common_utf8 global
+    heap_profiler
     ${CRYPTO_LIBS}
     ${ARROW_LIBRARIES}
     ${ARROW_FLIGHT_LIBRARIES}

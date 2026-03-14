@@ -54,6 +54,8 @@ public:
 
 };
 
+class RGWHeapProfilerHook;
+
 namespace rgw {
 
 namespace lua { class Background; }
@@ -91,6 +93,7 @@ class AppMain {
   std::unique_ptr<RGWRealmWatcher> realm_watcher;
   std::unique_ptr<RGWPauser> rgw_pauser;
   std::unique_ptr<sal::ConfigStore> cfgstore;
+  std::unique_ptr<RGWHeapProfilerHook> heap_profiler_hook;
   SiteConfig site;
   const DoutPrefixProvider* dpp;
   RGWProcessEnv env;
@@ -131,6 +134,7 @@ public:
   void init_numa();
   int init_storage();
   void init_perfcounters();
+  void init_heap_profiler();
   void init_http_clients();
   void cond_init_apis();
   void init_ldap();
