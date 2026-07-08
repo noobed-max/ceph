@@ -93,6 +93,7 @@ public:
   // FIXME: wrap for send_command?
   MonClient &get_monc() {return monc;}
   Objecter  &get_objecter() {return objecter;}
+  DaemonServer &get_server() {return server;}
   PyObject *cacheable_get_python(std::string_view what,
     const bool get_mutable = false);
   PyObject *get_python(std::string_view what,

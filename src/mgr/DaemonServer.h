@@ -17,6 +17,7 @@
 
 #include "PyModuleRegistry.h"
 
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -45,6 +46,7 @@ class MMgrUpdate;
 class MMgrClose;
 class MMonMgrReport;
 class MCommand;
+class MCommandReply;
 class MMgrCommand;
 class MgrSession;
 struct MonCommand;
@@ -174,6 +176,18 @@ protected:
 
   /// connections for osds
   std::unordered_map<int, std::set<ConnectionRef>> osd_cons;
+
+  /// connections for service daemons (e.g. rgw), by service map key
+  std::map<DaemonKey, ConnectionRef> service_daemon_conns;
+
+  /// commands relayed to service daemons, awaiting an MCommandReply
+  struct ServiceCommandOp {
+    ConnectionRef con;
+    std::function<void(int, const std::string&,
+		       ceph::buffer::list&)> on_finish;
+  };
+  std::map<ceph_tid_t, ServiceCommandOp> outstanding_service_commands;
+  ceph_tid_t next_service_command_tid = 1;
 
   ServiceMap pending_service_map;  // uncommitted
 
@@ -339,7 +353,19 @@ public:
   bool handle_report(const ceph::ref_t<MMgrReport>& m);
   bool handle_command(const ceph::ref_t<MCommand>& m);
   bool handle_command(const ceph::ref_t<MMgrCommand>& m);
+  bool handle_command_reply(const ceph::ref_t<MCommandReply>& m);
   bool _handle_command(std::shared_ptr<CommandContext>& cmdctx);
+
+  /// relay a command to a connected service daemon (e.g. rgw) over its
+  /// MgrClient connection; on_finish is called from the message dispatch
+  /// context when the MCommandReply arrives (or the connection drops)
+  int send_command_to_service_daemon(
+      const std::string& service,
+      const std::string& daemon,
+      const std::vector<std::string>& cmd,
+      const ceph::buffer::list& inbl,
+      std::function<void(int, const std::string&,
+			 ceph::buffer::list&)> on_finish);
   void send_report();
   void got_service_map();
   void got_mgr_map();

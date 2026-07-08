@@ -331,6 +331,38 @@ void DaemonServer::ms_handle_accept(Connection* con)
 
 bool DaemonServer::ms_handle_reset(Connection *con)
 {
+  // drop any service daemon registration and fail any relayed commands
+  // still waiting for a reply on this connection
+  {
+    std::vector<ServiceCommandOp> failed_ops;
+    {
+      std::lock_guard l(lock);
+      for (auto i = service_daemon_conns.begin();
+	   i != service_daemon_conns.end(); ) {
+	if (i->second.get() == con) {
+	  dout(10) << "unregistering service daemon connection for "
+		   << i->first << dendl;
+	  i = service_daemon_conns.erase(i);
+	} else {
+	  ++i;
+	}
+      }
+      for (auto i = outstanding_service_commands.begin();
+	   i != outstanding_service_commands.end(); ) {
+	if (i->second.con.get() == con) {
+	  failed_ops.push_back(std::move(i->second));
+	  i = outstanding_service_commands.erase(i);
+	} else {
+	  ++i;
+	}
+      }
+    }
+    for (auto& op : failed_ops) {
+      bufferlist empty;
+      op.on_finish(-EPIPE, "service daemon connection was reset", empty);
+    }
+  }
+
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_OSD) {
     auto priv = con->get_priv();
     auto session = static_cast<MgrSession*>(priv.get());
@@ -378,6 +410,8 @@ Dispatcher::dispatch_result_t DaemonServer::ms_dispatch2(const ref_t<Message>& m
       return handle_command(ref_cast<MCommand>(m));
     case MSG_MGR_COMMAND:
       return handle_command(ref_cast<MMgrCommand>(m));
+    case MSG_COMMAND_REPLY:
+      return handle_command_reply(ref_cast<MCommandReply>(m));
     default:
       dout(1) << "Unhandled message type " << m->get_type() << dendl;
       return false;
@@ -622,6 +656,9 @@ bool DaemonServer::handle_open(const ref_t<MMgrOpen>& m)
 	d->metadata = m->daemon_metadata;
 	pending_service_map_dirty = pending_service_map.epoch;
       }
+
+      // remember the connection so we can relay commands to this daemon
+      service_daemon_conns[key] = con;
     }
 
     auto p = m->config_bl.cbegin();
@@ -712,9 +749,71 @@ bool DaemonServer::handle_close(const ref_t<MMgrClose>& m)
       }
     }
   }
+  service_daemon_conns.erase(key);
 
   // send same message back as a reply
   m->get_connection()->send_message2(m);
+  return true;
+}
+
+int DaemonServer::send_command_to_service_daemon(
+    const std::string& service,
+    const std::string& daemon,
+    const std::vector<std::string>& cmd,
+    const bufferlist& inbl,
+    std::function<void(int, const std::string&,
+		       bufferlist&)> on_finish)
+{
+  std::lock_guard l(lock);
+
+  DaemonKey key{service, daemon};
+  auto p = service_daemon_conns.find(key);
+  if (p == service_daemon_conns.end()) {
+    dout(10) << "no connection for service daemon " << key << dendl;
+    return -ENOENT;
+  }
+  ConnectionRef con = p->second;
+  if (!con->is_connected()) {
+    dout(10) << "connection for service daemon " << key
+	     << " is down" << dendl;
+    return -ENOTCONN;
+  }
+
+  ceph_tid_t tid = next_service_command_tid++;
+  outstanding_service_commands[tid] = ServiceCommandOp{
+    con, std::move(on_finish)};
+
+  auto m = ceph::make_message<MCommand>(monc->get_fsid());
+  m->cmd = cmd;
+  m->set_data(inbl);
+  m->set_tid(tid);
+  dout(10) << "relaying command to service daemon " << key
+	   << " tid " << tid << " cmd " << cmd << dendl;
+  con->send_message2(std::move(m));
+  return 0;
+}
+
+bool DaemonServer::handle_command_reply(const ref_t<MCommandReply>& m)
+{
+  ServiceCommandOp op;
+  {
+    std::lock_guard l(lock);
+    auto p = outstanding_service_commands.find(m->get_tid());
+    if (p == outstanding_service_commands.end()) {
+      dout(4) << "unknown command reply tid " << m->get_tid() << dendl;
+      return true;
+    }
+    if (p->second.con != m->get_connection()) {
+      dout(4) << "command reply tid " << m->get_tid()
+	      << " from unexpected connection, dropping" << dendl;
+      return true;
+    }
+    op = std::move(p->second);
+    outstanding_service_commands.erase(p);
+  }
+  dout(10) << "command reply tid " << m->get_tid() << " r " << m->r << dendl;
+  bufferlist outbl = m->get_data();
+  op.on_finish(m->r, m->rs, outbl);
   return true;
 }
 
