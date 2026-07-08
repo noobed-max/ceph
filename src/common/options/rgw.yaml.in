@@ -1289,6 +1289,26 @@ options:
   see_also:
   - rgw_max_concurrent_requests
   with_legacy: true
+- name: rgw_tcmalloc_max_total_thread_cache_bytes
+  type: size
+  level: advanced
+  desc: Maximum total size of the tcmalloc thread caches shared by all RGW threads.
+  long_desc: RGW runs many request handling threads (see rgw_thread_pool_size), so
+    the tcmalloc default of 32MB shared across all of them leaves each thread with
+    only a small cache, pushing allocations to tcmalloc's lock-protected central
+    cache and causing lock contention. Raising this value can reduce allocator
+    contention under load. A value of 0 leaves the tcmalloc default (or the
+    TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES environment variable) unchanged. Applied
+    at startup; can also be changed at runtime via the set_heap_property admin
+    socket command. Has no effect unless RGW is built with tcmalloc.
+  fmt_desc: Maximum total size of the tcmalloc thread caches shared by all RGW
+    threads. Set to 0 to keep the tcmalloc default. Only effective when RGW is
+    built with tcmalloc.
+  default: 0
+  services:
+  - rgw
+  see_also:
+  - rgw_thread_pool_size
 - name: rgw_num_control_oids
   type: int
   level: advanced

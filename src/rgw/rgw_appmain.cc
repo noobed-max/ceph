@@ -17,8 +17,11 @@
 #include <boost/intrusive/list.hpp>
 #include "global/global_init.h"
 #include "global/signal_handler.h"
+#include "common/admin_socket.h"
+#include "common/cmdparse.h"
 #include "common/config.h"
 #include "common/errno.h"
+#include "common/Formatter.h"
 #include "common/Timer.h"
 #include "common/TracepointProvider.h"
 #include "common/numa.h"
@@ -26,6 +29,7 @@
 #include "include/compat.h"
 #include "include/str_list.h"
 #include "include/stringify.h"
+#include "perfglue/heap_profiler.h"
 #include "rgw_kms_cache.h"
 #include "rgw_main.h"
 #include "rgw_asio_thread.h"
@@ -85,13 +89,68 @@
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
+using TOPNSPC::common::cmd_getval;
 
 namespace {
   TracepointProvider::Traits rgw_op_tracepoint_traits(
     "librgw_op_tp.so", "rgw_op_tracing");
   TracepointProvider::Traits rgw_rados_tracepoint_traits(
     "librgw_rados_tp.so", "rgw_rados_tracing");
-}
+
+class RGWHeapPropertyHook : public AdminSocketHook {
+public:
+  int call(std::string_view command,
+           const cmdmap_t& cmdmap,
+           const ceph::buffer::list&,
+           ceph::Formatter* f,
+           std::ostream& errss,
+           ceph::buffer::list&) override {
+    if (!ceph_using_tcmalloc()) {
+      errss << "could not issue heap property command -- not using tcmalloc!";
+      return -EOPNOTSUPP;
+    }
+    string error;
+    bool success = false;
+    if (command == "set_heap_property") {
+      string property;
+      int64_t value = 0;
+      if (!cmd_getval(cmdmap, "property", property)) {
+        error = "unable to get property";
+      } else if (!cmd_getval(cmdmap, "value", value)) {
+        error = "unable to get value";
+      } else if (value < 0) {
+        error = "negative value not allowed";
+      } else if (!ceph_heap_set_numeric_property(property.c_str(),
+                                                 (size_t)value)) {
+        error = "invalid property";
+      } else {
+        success = true;
+      }
+      f->open_object_section("result");
+      f->dump_string("error", error);
+      f->dump_bool("success", success);
+      f->close_section();
+    } else if (command == "get_heap_property") {
+      string property;
+      size_t value = 0;
+      if (!cmd_getval(cmdmap, "property", property)) {
+        error = "unable to get property";
+      } else if (!ceph_heap_get_numeric_property(property.c_str(), &value)) {
+        error = "invalid property";
+      } else {
+        success = true;
+      }
+      f->open_object_section("result");
+      f->dump_string("error", error);
+      f->dump_bool("success", success);
+      f->dump_int("value", value);
+      f->close_section();
+    }
+    return 0;
+  }
+};
+
+} // anonymous namespace
 
 OpsLogFile* rgw::AppMain::ops_log_file;
 
@@ -260,6 +319,45 @@ int rgw::AppMain::init_storage()
 void rgw::AppMain::init_perfcounters()
 {
   (void) rgw_perf_start(dpp->get_cct());
+
+  auto cct = dpp->get_cct();
+  const size_t thread_cache_bytes = cct->_conf.get_val<Option::size_t>(
+      "rgw_tcmalloc_max_total_thread_cache_bytes");
+  if (thread_cache_bytes > 0) {
+    if (!ceph_using_tcmalloc()) {
+      ldpp_dout(dpp, 0) << "rgw_tcmalloc_max_total_thread_cache_bytes is set,"
+          " but RGW is not built with tcmalloc; ignoring" << dendl;
+    } else if (ceph_heap_set_numeric_property(
+                 "tcmalloc.max_total_thread_cache_bytes",
+                 thread_cache_bytes)) {
+      ldpp_dout(dpp, 1) << "set tcmalloc.max_total_thread_cache_bytes to "
+          << thread_cache_bytes << dendl;
+    } else {
+      ldpp_dout(dpp, 0) << "failed to set"
+          " tcmalloc.max_total_thread_cache_bytes to "
+          << thread_cache_bytes << dendl;
+    }
+  }
+
+  heap_property_hook = new RGWHeapPropertyHook();
+  int r = cct->get_admin_socket()->register_command(
+    "set_heap_property "
+    "name=property,type=CephString "
+    "name=value,type=CephInt",
+    heap_property_hook,
+    "update malloc extension heap property");
+  if (r == 0) {
+    r = cct->get_admin_socket()->register_command(
+      "get_heap_property "
+      "name=property,type=CephString",
+      heap_property_hook,
+      "get malloc extension heap property");
+  }
+  if (r < 0) {
+    cct->get_admin_socket()->unregister_commands(heap_property_hook);
+    delete heap_property_hook;
+    heap_property_hook = nullptr;
+  }
 } /* init_perfcounters */
 
 void rgw::AppMain::init_http_clients()
@@ -681,6 +779,11 @@ void rgw::AppMain::shutdown(std::function<void(void)> finalize_async_signals)
   rgw::curl::cleanup_curl();
   g_conf().remove_observer(implicit_tenant_context.get());
   implicit_tenant_context.reset(); // deletes
+  if (heap_property_hook) {
+    g_ceph_context->get_admin_socket()->unregister_commands(heap_property_hook);
+    delete heap_property_hook;
+    heap_property_hook = nullptr;
+  }
   rgw_perf_stop(g_ceph_context);
   ratelimiter.reset(); // deletes--ensure this happens before we destruct
 } /* AppMain::shutdown */
