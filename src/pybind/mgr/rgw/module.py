@@ -176,6 +176,55 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
 
         return HandleCommandResult(retval=returncode, stdout=out, stderr=err)
 
+    def _rgw_service_daemon_id(self, svc_id: str) -> str:
+        """Resolve an RGW daemon id to its service map key (the rados
+        instance gid). Accepts either the gid itself or the daemon's
+        registered id (e.g. '8000' for client.rgw.8000)."""
+        service_map = self.get('service_map')
+        daemons = service_map.get('services', {}).get('rgw', {}).get('daemons', {})
+        matches = []
+        for key, info in daemons.items():
+            if not isinstance(info, dict):
+                continue  # skip the 'summary' entry
+            if key == svc_id or info.get('metadata', {}).get('id') == svc_id:
+                matches.append(key)
+        if not matches:
+            known = [i.get('metadata', {}).get('id', k) for k, i in daemons.items()
+                     if isinstance(i, dict)]
+            raise ValueError(f"no RGW daemon '{svc_id}' found in the service map; "
+                             f"known daemons: {known}")
+        if len(matches) > 1:
+            raise ValueError(f"multiple RGW daemons match '{svc_id}': {matches}; "
+                             "use the gid from 'ceph service dump'")
+        return matches[0]
+
+    @RGWCLICommand('rgw heap-property get', perm='r')
+    def _cmd_rgw_heap_property_get(self, svc_id: str, prop: str) -> HandleCommandResult:
+        """Get a malloc extension heap property from a running RGW daemon"""
+        try:
+            gid = self._rgw_service_daemon_id(svc_id)
+            retval, out, err = self.tell_command('rgw', gid, {
+                'prefix': 'get_heap_property',
+                'property': prop,
+            })
+        except (RuntimeError, ValueError) as e:
+            return HandleCommandResult(retval=-errno.ENOENT, stdout='', stderr=str(e))
+        return HandleCommandResult(retval=retval, stdout=out, stderr=err)
+
+    @RGWCLICommand('rgw heap-property set', perm='rw')
+    def _cmd_rgw_heap_property_set(self, svc_id: str, prop: str, value: int) -> HandleCommandResult:
+        """Set a malloc extension heap property on a running RGW daemon"""
+        try:
+            gid = self._rgw_service_daemon_id(svc_id)
+            retval, out, err = self.tell_command('rgw', gid, {
+                'prefix': 'set_heap_property',
+                'property': prop,
+                'value': value,
+            })
+        except (RuntimeError, ValueError) as e:
+            return HandleCommandResult(retval=-errno.ENOENT, stdout='', stderr=str(e))
+        return HandleCommandResult(retval=retval, stdout=out, stderr=err)
+
     @RGWCLICommand('rgw realm bootstrap', perm='rw')
     @check_orchestrator
     def _cmd_rgw_realm_bootstrap(self,

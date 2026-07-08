@@ -241,12 +241,27 @@ ceph_send_command(BaseMgrModule *self, PyObject *args, PyObject *kwargs)
     PyEval_RestoreThread(tstate);
     return nullptr;
   } else {
-    delete command_c;
-    string msg("unknown service type: ");
-    msg.append(type);
-    PyEval_RestoreThread(tstate);
-    PyErr_SetString(PyExc_ValueError, msg.c_str());
-    return nullptr;
+    // Not a first-class daemon type; try relaying to a service daemon
+    // (e.g. rgw) over its MgrClient connection to the mgr.
+    int r = self->py_modules->get_server().send_command_to_service_daemon(
+        type,
+        name,
+        {cmd_json},
+        inbuf,
+        [command_c, f = &self->py_modules->cmd_finisher]
+        (int command_r, const std::string& outs, ceph::buffer::list& outbl) {
+          command_c->outs = outs;
+          command_c->outbl = std::move(outbl);
+          f->queue(command_c, command_r);
+        });
+    if (r < 0) {
+      delete command_c;
+      string msg("unknown service type or no connected daemon: ");
+      msg.append(type).append(".").append(name);
+      PyEval_RestoreThread(tstate);
+      PyErr_SetString(PyExc_RuntimeError, msg.c_str());
+      return nullptr;
+    }
   }
 
   PyEval_RestoreThread(tstate);

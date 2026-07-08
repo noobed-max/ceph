@@ -15,6 +15,7 @@
 
 #include "MgrClient.h"
 
+#include "common/admin_socket.h"
 #include "common/perf_counters_collection.h"
 #include "common/perf_counters_key.h"
 #include "mgr/MgrContext.h"
@@ -112,6 +113,17 @@ Dispatcher::dispatch_result_t MgrClient::ms_dispatch2(const ref_t<Message>& m)
     return handle_mgr_configure(ref_cast<MMgrConfigure>(m));
   case MSG_MGR_CLOSE:
     return handle_mgr_close(ref_cast<MMgrClose>(m));
+  case MSG_COMMAND:
+    // command relayed by the mgr's DaemonServer (e.g. for service daemons
+    // like rgw that are not reachable via 'ceph tell'); execute it on the
+    // local admin socket, which sends the MCommandReply itself
+    if (session && m->get_connection() == session->con) {
+      cct->get_admin_socket()->queue_tell_command(ref_cast<MCommand>(m));
+      return true;
+    } else {
+      ldout(cct, 4) << "dropping MCommand from non-mgr connection" << dendl;
+      return false;
+    }
   case MSG_COMMAND_REPLY:
     if (m->get_source().type() == CEPH_ENTITY_TYPE_MGR) {
       MCommandReply *c = static_cast<MCommandReply*>(m.get());
