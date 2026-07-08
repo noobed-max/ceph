@@ -15,11 +15,14 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 #include <map>
 #include <string>
 
 #include "common/async/context_pool.h"
+#include "common/ceph_mutex.h"
+#include "common/Timer.h"
 
 #include "rgw_common.h"
 #include "rgw_rest.h"
@@ -95,6 +98,11 @@ class AppMain {
   const DoutPrefixProvider* dpp;
   RGWProcessEnv env;
   class AdminSocketHook* heap_property_hook{nullptr};
+  ceph::mutex memory_release_lock =
+      ceph::make_mutex("AppMain::memory_release_lock");
+  std::unique_ptr<SafeTimer> memory_release_timer;
+
+  void schedule_memory_release();
 
   class IOContextPoolHolder {
   private:

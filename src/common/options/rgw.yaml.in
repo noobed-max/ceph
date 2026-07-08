@@ -1309,6 +1309,37 @@ options:
   - rgw
   see_also:
   - rgw_thread_pool_size
+- name: rgw_enable_periodic_memory_release
+  type: bool
+  level: advanced
+  desc: Periodically release unused tcmalloc memory back to the OS.
+  long_desc: When enabled, RGW periodically calls tcmalloc's ReleaseFreeMemory()
+    to return free pages to the OS, reducing resident memory after load spikes.
+    This is the same mechanism used by the OSD's PriorityCache and by the MDS
+    during cache trimming. The release interval is controlled by
+    rgw_periodic_memory_release_interval. Takes effect at startup. Has no
+    effect unless RGW is built with tcmalloc.
+  fmt_desc: Periodically release unused tcmalloc memory back to the OS. Only
+    effective when RGW is built with tcmalloc.
+  default: false
+  services:
+  - rgw
+  see_also:
+  - rgw_periodic_memory_release_interval
+- name: rgw_periodic_memory_release_interval
+  type: secs
+  level: advanced
+  desc: Interval in seconds between periodic tcmalloc memory releases.
+  long_desc: Only used when rgw_enable_periodic_memory_release is true. The
+    value is read before each release, so changes apply from the next cycle
+    without a restart.
+  fmt_desc: Interval in seconds between periodic tcmalloc memory releases.
+  default: 5_min
+  min: 1
+  services:
+  - rgw
+  see_also:
+  - rgw_enable_periodic_memory_release
 - name: rgw_num_control_oids
   type: int
   level: advanced

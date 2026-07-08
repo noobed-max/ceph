@@ -27,6 +27,7 @@
 #include "common/numa.h"
 #include "common/split.h"
 #include "include/compat.h"
+#include "include/Context.h"
 #include "include/str_list.h"
 #include "include/stringify.h"
 #include "perfglue/heap_profiler.h"
@@ -358,7 +359,34 @@ void rgw::AppMain::init_perfcounters()
     delete heap_property_hook;
     heap_property_hook = nullptr;
   }
+
+  if (cct->_conf.get_val<bool>("rgw_enable_periodic_memory_release")) {
+    if (!ceph_using_tcmalloc()) {
+      ldpp_dout(dpp, 0) << "rgw_enable_periodic_memory_release is set,"
+          " but RGW is not built with tcmalloc; ignoring" << dendl;
+    } else {
+      memory_release_timer = std::make_unique<SafeTimer>(
+          cct, memory_release_lock);
+      memory_release_timer->init();
+      std::lock_guard l{memory_release_lock};
+      schedule_memory_release();
+    }
+  }
 } /* init_perfcounters */
+
+// memory_release_lock must be held
+void rgw::AppMain::schedule_memory_release()
+{
+  const auto interval = dpp->get_cct()->_conf.get_val<std::chrono::seconds>(
+      "rgw_periodic_memory_release_interval");
+  memory_release_timer->add_event_after(
+      interval, new LambdaContext([this](int) {
+        ceph_heap_release_free_memory();
+        ldpp_dout(dpp, 20) << "released free tcmalloc memory to the OS"
+            << dendl;
+        schedule_memory_release();
+      }));
+} /* schedule_memory_release */
 
 void rgw::AppMain::init_http_clients()
 {
@@ -779,6 +807,13 @@ void rgw::AppMain::shutdown(std::function<void(void)> finalize_async_signals)
   rgw::curl::cleanup_curl();
   g_conf().remove_observer(implicit_tenant_context.get());
   implicit_tenant_context.reset(); // deletes
+  if (memory_release_timer) {
+    {
+      std::lock_guard l{memory_release_lock};
+      memory_release_timer->shutdown();
+    }
+    memory_release_timer.reset();
+  }
   if (heap_property_hook) {
     g_ceph_context->get_admin_socket()->unregister_commands(heap_property_hook);
     delete heap_property_hook;
